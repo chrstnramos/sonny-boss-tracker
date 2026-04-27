@@ -1,5 +1,5 @@
 import { db } from '../lib/firebase'
-import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore'
+import { doc, getDoc, setDoc, deleteDoc, onSnapshot, type Unsubscribe } from 'firebase/firestore'
 import type { Task, Project, AppSettings } from '../types'
 
 export async function deleteProjectFromFirestore(projectId: string): Promise<void> {
@@ -43,4 +43,33 @@ export async function loadSettingsFromFirestore(projectId: string): Promise<AppS
   if (!snap.exists()) return null
   const { updatedAt: _u, ...settings } = snap.data()
   return settings as AppSettings
+}
+
+// ─── Live subscriptions (real-time cross-device sync) ───────────────────────
+
+export function subscribeTasks(projectId: string, cb: (tasks: Task[]) => void): Unsubscribe {
+  if (!db) return () => { /* noop */ }
+  return onSnapshot(doc(db, 'tasks', projectId), (snap) => {
+    if (!snap.exists()) return
+    const data = snap.data()
+    if (Array.isArray(data.items)) cb(data.items as Task[])
+  })
+}
+
+export function subscribeProjects(cb: (projects: Project[]) => void): Unsubscribe {
+  if (!db) return () => { /* noop */ }
+  return onSnapshot(doc(db, 'meta', 'projects'), (snap) => {
+    if (!snap.exists()) return
+    const data = snap.data()
+    if (Array.isArray(data.items)) cb(data.items as Project[])
+  })
+}
+
+export function subscribeSettings(projectId: string, cb: (settings: AppSettings) => void): Unsubscribe {
+  if (!db) return () => { /* noop */ }
+  return onSnapshot(doc(db, 'settings', projectId), (snap) => {
+    if (!snap.exists()) return
+    const { updatedAt: _u, ...settings } = snap.data()
+    cb(settings as AppSettings)
+  })
 }

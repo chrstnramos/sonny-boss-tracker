@@ -1,6 +1,14 @@
 import { useEffect, useRef } from 'react'
 import { isFirebaseConfigured } from '../lib/firebase'
-import { saveTasksToFirestore, saveProjectsToFirestore, saveSettingsToFirestore } from '../storage/firestore'
+import {
+  saveTasksToFirestore,
+  saveProjectsToFirestore,
+  saveSettingsToFirestore,
+  subscribeTasks,
+  subscribeProjects,
+  subscribeSettings,
+} from '../storage/firestore'
+import { saveTasks, saveProjects, saveSettings } from '../storage/adapter'
 import { useTaskStore } from '../store/taskStore'
 import { useProjectStore } from '../store/projectStore'
 import { useSettingsStore } from '../store/settingsStore'
@@ -11,6 +19,19 @@ function makeDebounced(fn: (...args: unknown[]) => Promise<void>, delay: number)
   return (...args: unknown[]) => {
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => fn(...args), delay)
+  }
+}
+
+// Module-level write-suppression flag. When we apply a remote snapshot to a
+// store, we set this true so the store's subscriber won't echo the same data
+// back to Firestore as a "local" write. Cleared shortly after.
+const remoteApplying = { current: false }
+function withRemoteApply(fn: () => void) {
+  remoteApplying.current = true
+  try {
+    fn()
+  } finally {
+    setTimeout(() => { remoteApplying.current = false }, 50)
   }
 }
 
@@ -63,25 +84,83 @@ export function useFirestoreSync() {
       800
     )
 
+    // ─── Outgoing: local store changes → debounced Firestore writes ─────────
     const unsubTasks = useTaskStore.subscribe((state) => {
+      if (remoteApplying.current) return
       if (!state.activeProjectId || !state.tasks.length) return
       debouncedTasks(state.tasks, state.activeProjectId)
     })
 
     const unsubProjects = useProjectStore.subscribe((state) => {
+      if (remoteApplying.current) return
       if (!state.projects.length) return
       debouncedProjects(state.projects)
     })
 
     const unsubSettings = useSettingsStore.subscribe((state) => {
+      if (remoteApplying.current) return
       if (!state.activeProjectId) return
       debouncedSettings(state.settings, state.activeProjectId)
+    })
+
+    // ─── Incoming: Firestore changes → local store updates (real-time) ──────
+    let unsubRemoteTasks: (() => void) | null = null
+    let unsubRemoteSettings: (() => void) | null = null
+    let lastSubscribedProjectId: string | null = null
+
+    const resubscribePerProject = () => {
+      const pid = useProjectStore.getState().activeProjectId
+      if (!pid || pid === lastSubscribedProjectId) return
+      lastSubscribedProjectId = pid
+
+      unsubRemoteTasks?.()
+      unsubRemoteSettings?.()
+
+      unsubRemoteTasks = subscribeTasks(pid, (tasks) => {
+        const current = useTaskStore.getState()
+        if (current.activeProjectId !== pid) return
+        // Skip if identical to local (avoids redundant re-renders)
+        if (JSON.stringify(current.tasks) === JSON.stringify(tasks)) return
+        withRemoteApply(() => {
+          saveTasks(tasks, pid)
+          useTaskStore.setState({ tasks })
+        })
+      })
+
+      unsubRemoteSettings = subscribeSettings(pid, (settings) => {
+        const current = useSettingsStore.getState()
+        if (current.activeProjectId !== pid) return
+        if (JSON.stringify(current.settings) === JSON.stringify(settings)) return
+        withRemoteApply(() => {
+          saveSettings(settings, pid)
+          useSettingsStore.setState({ settings })
+        })
+      })
+    }
+
+    const unsubRemoteProjects = subscribeProjects((projects) => {
+      const current = useProjectStore.getState()
+      if (JSON.stringify(current.projects) === JSON.stringify(projects)) return
+      withRemoteApply(() => {
+        saveProjects(projects)
+        useProjectStore.setState({ projects })
+      })
+    })
+
+    // Subscribe initially + whenever active project changes
+    resubscribePerProject()
+    const unsubProjectSwitch = useProjectStore.subscribe(() => {
+      resubscribePerProject()
     })
 
     return () => {
       unsubTasks()
       unsubProjects()
       unsubSettings()
+      unsubRemoteProjects()
+      unsubRemoteTasks?.()
+      unsubRemoteSettings?.()
+      unsubProjectSwitch()
     }
   }, [setSyncing, setSynced, setError, setOffline, setIdle])
 }
