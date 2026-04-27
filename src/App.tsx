@@ -5,13 +5,19 @@ import { Dashboard } from './pages/Dashboard'
 import { TimelinePage } from './pages/TimelinePage'
 import { TodayPage } from './pages/TodayPage'
 import { initApp } from './utils/seed'
-import { useFirestoreSync } from './hooks/useFirestoreSync'
+import { useFirestoreSync, markBootComplete } from './hooks/useFirestoreSync'
 
 function App() {
   useFirestoreSync()
   useEffect(() => {
     document.documentElement.classList.add('dark')
-    ;(async () => { await initApp() })()
+    ;(async () => {
+      await initApp()
+      // Open the gate only after the initial Firestore hydration finishes,
+      // so seed/load-time store mutations don't get echoed back to Firestore
+      // and clobber the user's real data.
+      markBootComplete()
+    })()
   }, [])
 
   return (

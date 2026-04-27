@@ -35,6 +35,14 @@ function withRemoteApply(fn: () => void) {
   }
 }
 
+// Boot gate: writes are blocked until initApp finishes loading from Firestore.
+// Without this, the seed-tasks-on-fresh-tab path would queue an 800ms-debounced
+// write of default tasks, then the Firestore load would replace the store with
+// the user's real tasks, and 800ms later the queued write would still fire and
+// overwrite Firestore with seed tasks.
+const bootGate = { ready: false }
+export function markBootComplete() { bootGate.ready = true }
+
 export function useFirestoreSync() {
   const { setSyncing, setSynced, setError, setOffline, setIdle } = useSyncStore()
   const configuredRef = useRef(isFirebaseConfigured())
@@ -86,18 +94,21 @@ export function useFirestoreSync() {
 
     // ─── Outgoing: local store changes → debounced Firestore writes ─────────
     const unsubTasks = useTaskStore.subscribe((state) => {
+      if (!bootGate.ready) return
       if (remoteApplying.current) return
       if (!state.activeProjectId || !state.tasks.length) return
       debouncedTasks(state.tasks, state.activeProjectId)
     })
 
     const unsubProjects = useProjectStore.subscribe((state) => {
+      if (!bootGate.ready) return
       if (remoteApplying.current) return
       if (!state.projects.length) return
       debouncedProjects(state.projects)
     })
 
     const unsubSettings = useSettingsStore.subscribe((state) => {
+      if (!bootGate.ready) return
       if (remoteApplying.current) return
       if (!state.activeProjectId) return
       debouncedSettings(state.settings, state.activeProjectId)
