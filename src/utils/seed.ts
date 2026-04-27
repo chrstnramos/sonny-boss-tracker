@@ -4,6 +4,8 @@ import { loadTasksFromFirestore, loadProjectsFromFirestore, loadSettingsFromFire
 import { useTaskStore } from '../store/taskStore'
 import { useSettingsStore } from '../store/settingsStore'
 import { useProjectStore, STX_PROJECT_ID } from '../store/projectStore'
+import { useSyncStore } from '../store/syncStore'
+import { isFirebaseConfigured } from '../lib/firebase'
 import type { Project } from '../types'
 
 const STX_PROJECT: Project = {
@@ -44,6 +46,10 @@ export async function initApp() {
   useSettingsStore.getState().loadForProject(activeId)
 
   // ── 6. Async: try to hydrate from Firestore (source of truth) ──
+  if (!isFirebaseConfigured()) return
+
+  const sync = useSyncStore.getState()
+  sync.setSyncing()
   try {
     const [firestoreProjects, firestoreTasks, firestoreSettings] = await Promise.all([
       loadProjectsFromFirestore(),
@@ -65,7 +71,14 @@ export async function initApp() {
       saveSettings(firestoreSettings, activeId)
       useSettingsStore.getState().loadForProject(activeId)
     }
-  } catch {
-    // Firestore unavailable — localStorage data already loaded above
+
+    sync.setSynced()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error'
+    if (msg.includes('offline') || msg.includes('network') || msg.includes('unavailable')) {
+      sync.setOffline()
+    } else {
+      sync.setError(msg)
+    }
   }
 }
